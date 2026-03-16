@@ -19,6 +19,20 @@ interface VoiceStore {
   setLanguage: (lang: Language) => void;
 }
 
+async function ensureBackendHealthy() {
+  const apiBase =
+    process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api';
+
+  // Our health endpoint is mounted at /health on the root app,
+  // so strip a trailing /api if present.
+  const url = apiBase.replace(/\/api\/?$/, '') + '/health';
+
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`Backend health check failed with status ${res.status}`);
+  }
+}
+
 export const useVoiceStore = create<VoiceStore>((set, get) => ({
   wsService: null,
   isConnected: false,
@@ -30,6 +44,14 @@ export const useVoiceStore = create<VoiceStore>((set, get) => ({
 
   connect: async (sessionId: string) => {
     const wsUrl = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000/ws';
+
+    try {
+      await ensureBackendHealthy();
+    } catch (err) {
+      console.error('Backend is not healthy, skipping WebSocket connect:', err);
+      set({ isConnected: false });
+      return;
+    }
 
     const svc = new VoiceWebSocketService(
       sessionId,
