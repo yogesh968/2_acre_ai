@@ -45,7 +45,7 @@ export interface AvailabilitySlot {
 }
 
 export interface VoiceMessage {
-  type: 'audio_chunk' | 'text' | 'control' | 'response';
+  type: 'audio_chunk' | 'text' | 'control' | 'response' | 'latency';
   data: string;
   sample_rate?: number;
   metadata?: Record<string, any>;
