@@ -1,0 +1,52 @@
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+websockets==12.0
+python-multipart==0.0.6
+
+# Database
+sqlalchemy==2.0.25
+alembic==1.13.1
+psycopg2-binary==2.9.9
+asyncpg==0.29.0
+
+# Redis
+redis==5.0.1
+hiredis==2.3.2
+
+# Celery
+celery==5.3.6
+flower==2.0.1
+
+# LLM & AI
+langchain==0.1.4
+langgraph==0.0.20
+langchain-openai==0.0.5
+openai==1.10.0
+
+# Speech
+openai-whisper==20231117
+TTS==0.22.0
+soundfile==0.12.1
+librosa==0.10.1
+
+# Language Detection
+langdetect==1.0.9
+fasttext-wheel==0.9.2
+
+# Utilities
+pydantic==2.5.3
+pydantic-settings==2.1.0
+python-dotenv==1.0.0
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+httpx==0.26.0
+
+# Monitoring & Logging
+structlog==24.1.0
+prometheus-client==0.19.0
+
+# Testing
+pytest==7.4.4
+pytest-asyncio==0.23.3
+pytest-cov==4.1.0
+httpx==0.26.0
