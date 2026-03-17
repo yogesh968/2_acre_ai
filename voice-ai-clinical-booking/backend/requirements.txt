@@ -29,6 +29,7 @@ openai
 # Speech
 openai-whisper
 TTS
+gTTS
 soundfile
 librosa
 
