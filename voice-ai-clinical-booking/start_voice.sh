@@ -13,7 +13,7 @@ sleep 2
 echo "🚀 Starting Backend (Voice-Enabled)..."
 cd backend
 source venv/bin/activate
-python -m uvicorn app.main_voice_complete:app --host 0.0.0.0 --port 8000 > ../logs/backend.log 2>&1 &
+python -m uvicorn app.main_working:app --host 0.0.0.0 --port 8000 > ../logs/backend.log 2>&1 &
 BACKEND_PID=$!
 echo $BACKEND_PID > ../logs/backend.pid
 cd ..
