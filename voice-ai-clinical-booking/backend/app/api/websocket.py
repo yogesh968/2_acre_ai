@@ -174,6 +174,14 @@ class VoiceWebSocketHandler:
                 "data": "interrupted",
                 "metadata": {}
             })
+        elif action == "set_language":
+            lang = message.get("metadata", {}).get("language", "en")
+            session_data = await redis_client.get_session(self.session_id)
+            if session_data:
+                session_data["language"] = lang
+                await redis_client.set_session(self.session_id, session_data)
+            self.agent.language = lang
+            print(f"🌐 Language set to: {lang}")
     
     async def send_message(self, message: dict):
         """Send message to client"""

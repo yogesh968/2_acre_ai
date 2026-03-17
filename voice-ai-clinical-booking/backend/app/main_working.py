@@ -5,11 +5,12 @@ from app.core.config import get_settings
 import json
 import base64
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from gtts import gTTS
 import io
 import asyncio
 import re
+from app.services.stt import stt_service
 
 settings = get_settings()
 
@@ -19,7 +20,7 @@ async def lifespan(app: FastAPI):
     print("🚀 Starting Clinical Voice AI application (Demo Mode)")
     print(f"📍 Server running on http://localhost:8000")
     print(f"📚 API Docs available at http://localhost:8000/docs")
-    print(f"🎤 Voice input: Enabled")
+    print(f"🎤 Voice input: Enabled (Whisper)")
     print(f"🔊 Voice output: Enabled (gTTS)")
     print(f"🤖 AI: Rule-based (No API key needed)")
     
@@ -46,57 +47,97 @@ app.add_middleware(
 sessions = {}
 processing_sessions = set()
 
-# Simple rule-based responses
-def get_ai_response(user_text: str, conversation_history: list) -> str:
-    """Simple rule-based AI responses"""
+# Multi-language rule-based responses
+RESPONSES = {
+    "en": {
+        "greeting": "Hello! I'm your medical appointment assistant. I can help you book, reschedule, or cancel appointments. How can I assist you today?",
+        "booking_sarah": "Great! I can help you book an appointment with Dr. Sarah Johnson, our General Physician. She's available Monday through Friday, 9 AM to 5 PM. What date and time would work best for you?",
+        "booking_raj": "Perfect! Dr. Raj Kumar, our Cardiologist, is available Monday through Wednesday, 10 AM to 4 PM. When would you like to schedule your appointment?",
+        "booking_priya": "Excellent! Dr. Priya Sharma, our Pediatrician, is available Tuesday through Saturday, 9 AM to 3 PM. What date and time would you prefer?",
+        "booking_general": "I'd be happy to help you book an appointment. We have three doctors available: Dr. Sarah Johnson (General Physician), Dr. Raj Kumar (Cardiologist), and Dr. Priya Sharma (Pediatrician). Which doctor would you like to see?",
+        "time_noted": "Perfect! I've noted your preferred time. To complete your booking, may I know the reason for your visit? This helps the doctor prepare for your appointment.",
+        "success": "Thank you! Your appointment has been successfully booked. You'll receive a confirmation message shortly. Is there anything else I can help you with?",
+        "cancel": "I understand you'd like to cancel an appointment. Could you please provide your appointment ID or the date of your appointment?",
+        "reschedule": "I can help you reschedule your appointment. What's your current appointment date, and when would you like to move it to?",
+        "check": "Let me check your appointments. You have one upcoming appointment with Dr. Sarah Johnson on January 15th at 10 AM. Would you like to modify this appointment?",
+        "thanks": "You're very welcome! If you need any assistance with appointments in the future, feel free to reach out. Take care!",
+        "goodbye": "Goodbye! Have a great day and stay healthy!",
+        "default": "I'm here to help with medical appointments. You can book a new appointment, reschedule an existing one, or cancel an appointment. What would you like to do?"
+    },
+    "hi": {
+        "greeting": "नमस्ते! मैं आपका मेडिकल अपॉइंटमेंट असिस्टेंट हूँ। मैं अपॉइंटमेंट बुक करने, पुनर्निर्धारित करने या रद्द करने में आपकी मदद कर सकता हूँ। मैं आज आपकी कैसे मदद कर सकता हूँ?",
+        "booking_sarah": "बहुत अच्छा! मैं जनरल फिजिशियन डॉ. सारा जॉनसन के साथ अपॉइंटमेंट बुक करने में आपकी मदद कर सकता हूँ। वह सोमवार से शुक्रवार सुबह 9 बजे से शाम 5 बजे तक उपलब्ध हैं। आपके लिए सबसे अच्छा तारीख और समय क्या होगा?",
+        "booking_raj": "बिल्कुल! हमारे कार्डियोलॉजिस्ट डॉ. राज कुमार सोमवार से बुधवार सुबह 10 बजे से शाम 4 बजे तक उपलब्ध हैं। आप अपना अपॉइंटमेंट कब निर्धारित करना चाहेंगे?",
+        "booking_priya": "बेहतरीन! हमारी पीडियाट्रिशियन डॉ. प्रिया शर्मा मंगलवार से शनिवार सुबह 9 बजे से दोपहर 3 बजे तक उपलब्ध हैं। आप कौन से तारीख और समय को पसंद करेंगे?",
+        "booking_general": "मुझे अपॉइंटमेंट बुक करने में आपकी मदद करने में खुशी होगी। हमारे पास तीन डॉक्टर उपलब्ध हैं: डॉ. सारा जॉनसन (जनरल फिजिशियन), डॉ. राज कुमार (कार्डियोलॉजिस्ट), और डॉ. प्रिया शर्मा (पीडियाट्रिशियन)। आप किस डॉक्टर को देखना चाहेंगे?",
+        "time_noted": "बढ़िया! मैंने आपके पसंदीदा समय को नोट कर लिया है। आपकी बुकिंग को पूरा करने के लिए, क्या मैं आपकी मुलाकात का कारण जान सकता हूँ? इससे डॉक्टर को आपकी अपॉइंटमेंट के लिए तैयारी करने में मदद मिलती है।",
+        "success": "धन्यवाद! आपका अपॉइंटमेंट सफलतापूर्वक बुक हो गया है। आपको जल्द ही एक पुष्टिकरण संदेश प्राप्त होगा। क्या मैं आपकी किसी और चीज़ में मदद कर सकता हूँ?",
+        "cancel": "मैं समझता हूँ कि आप अपॉइंटमेंट रद्द करना चाहते हैं। क्या आप कृपया अपनी अपॉइंटमेंट आईडी या अपॉइंटमेंट की तारीख बता सकते हैं?",
+        "reschedule": "मैं अपॉइंटमेंट को पुनर्निर्धारित करने में आपकी मदद कर सकता हूँ। आपकी वर्तमान अपॉइंटमेंट की तारीख क्या है, और आप इसे कब बदलना चाहेंगे?",
+        "check": "मुझे आपके अपॉइंटमेंट चेक करने दें। डॉ. सारा जॉनसन के साथ 15 जनवरी को सुबह 10 बजे आपका एक आगामी अपॉइंटमेंट है। क्या आप इस अपॉइंटमेंट में बदलाव करना चाहेंगे?",
+        "thanks": "आपका बहुत स्वागत है! यदि आपको भविष्य में अपॉइंटमेंट के लिए किसी सहायता की आवश्यकता हो, तो बेझिझक संपर्क करें। अपना ख्याल रखें!",
+        "goodbye": "अलविदा! आपका दिन शुभ हो और स्वस्थ रहें!",
+        "default": "मैं यहाँ मेडिकल अपॉइंटमेंट में मदद करने के लिए हूँ। आप नया अपॉइंटमेंट बुक कर सकते हैं, मौजूदा अपॉइंटमेंट को पुनर्निर्धारित कर सकते हैं, या अपॉइंटमेंट रद्द कर सकते हैं। आप क्या करना चाहेंगे?"
+    },
+    "ta": {
+        "greeting": "வணக்கம்! நான் உங்கள் மருத்துவ சந்திப்பு உதவியாளர். சந்திப்புகளை முன்பதிவு செய்ய, மாற்றியமைக்க அல்லது ரத்து செய்ய நான் உங்களுக்கு உதவ முடியும். இன்று நான் உங்களுக்கு எப்படி உதவ முடியும்?",
+        "booking_sarah": "மிகவும் நன்று! எமது பொது மருத்துவர் டாக்டர் சாரா ஜான்சனுடன் சந்திப்பை முன்பதிவு செய்ய நான் உங்களுக்கு உதவ முடியும். அவர் திங்கள் முதல் வெள்ளி வரை காலை 9 மணி முதல் மாலை 5 மணி வரை இருப்பார். உங்களுக்கு எந்த தேதி மற்றும் நேரம் வசதியாக இருக்கும்?",
+        "booking_raj": "நிச்சயமாக! எமது இதய சிகிச்சை நிபுணர் டாக்டர் ராஜ் குமார் திங்கள் முதல் புதன் வரை காலை 10 மணி முதல் மாலை 4 மணி வரை இருப்பார். உங்கள் சந்திப்பை எப்போது திட்டமிட விரும்புகிறீர்கள்?",
+        "booking_priya": "சிறப்பு! எமது குழந்தை நல மருத்துவர் டாக்டர் பிரியா சர்மா செவ்வாய் முதல் சனி வரை காலை 9 மணி முதல் மாலை 3 மணி வரை இருப்பார். நீங்கள் எந்த தேதி மற்றும் நேரத்தை விரும்புவீர்கள்?",
+        "booking_general": "சந்திப்பை முன்பதிவு செய்ய உங்களுக்கு உதவுவதில் நான் மகிழ்ச்சியடைகிறேன். எங்களிடம் மூன்று மருத்துவர்கள் உள்ளனர்: டாக்டர் சாரா ஜான்சன் (பொது மருத்துவர்), டாக்டர் ராஜ் குமார் (இதய சிகிச்சை நிபுணர்), மற்றும் டாக்டர் பிரியா சர்மா (குழந்தை நல மருத்துவர்). நீங்கள் எந்த மருத்துவரைப் பார்க்க விரும்புகிறீர்கள்?",
+        "time_noted": "மிகவும் நன்று! நீங்கள் விரும்பிய நேரத்தை நான் குறித்துக்கொண்டேன். உங்கள் முன்பதிவை முடிக்க, உங்கள் வருகைக்கான காரணத்தை நான் தெரிந்து கொள்ளலாமா? இது மருத்துவர் உங்கள் சந்திப்புக்குத் தயாராக உதவும்.",
+        "success": "நன்றி! உங்கள் சந்திப்பு வெற்றிகரமாக முன்பதிவு செய்யப்பட்டுள்ளது. விரைவில் உங்களுக்கு உறுதிப்படுத்தல் செய்தி வரும். நான் உங்களுக்கு வேறு ஏதேனும் உதவ முடியுமா?",
+        "cancel": "நீங்கள் ஒரு சந்திப்பை ரத்து செய்ய விரும்புகிறீர்கள் என்று எனக்குப் புரிகிறது. உங்கள் சந்திப்பு ஐடி அல்லது சந்திப்பு தேதியை வழங்க முடியுமா?",
+        "reschedule": "உங்கள் சந்திப்பை மாற்றியமைக்க நான் உங்களுக்கு உதவ முடியும். உங்கள் தற்போதைய சந்திப்பு தேதி என்ன, அதை எப்போது மாற்ற விரும்புகிறீர்கள்?",
+        "check": "உங்கள் சந்திப்புகளைச் சரிபார்க்கிறேன். ஜனவரி 15 காலை 10 மணிக்கு டாக்டர் சாரா ஜான்சனுடன் உங்களுக்கு ஒரு சந்திப்பு உள்ளது. இந்த சந்திப்பை மாற்ற விரும்புகிறீர்களா?",
+        "thanks": "மிக்க நன்றி! எதிர்காலத்தில் சந்திப்புகளுக்கு ஏதேனும் உதவி தேவைப்பட்டால், தயங்காமல் தொடர்பு கொள்ளுங்கள். உடலை நன்றாகப் பார்த்துக் கொள்ளுங்கள்!",
+        "goodbye": "சென்று வருகிறேன்! இனிய நாளாக அமையட்டும், ஆரோக்கியமாக இருங்கள்!",
+        "default": "மருத்துவ சந்திப்புகளுக்கு உதவ நான் இங்கு இருக்கிறேன். நீங்கள் ஒரு புதிய சந்திப்பு முன்பதிவு செய்யலாம், ஏற்கனவே உள்ள சந்திப்பை மாற்றியமைக்கலாம் அல்லது சந்திப்பு ரத்து செய்யலாம். நீங்கள் என்ன செய்ய விரும்புகிறீர்கள்?"
+    }
+}
+
+def get_ai_response(user_text: str, conversation_history: list, language: str = "en") -> str:
+    """Multi-language rule-based AI responses"""
     text_lower = user_text.lower()
+    resp = RESPONSES.get(language, RESPONSES["en"])
     
-    # Greeting
-    if any(word in text_lower for word in ['hello', 'hi', 'hey', 'good morning', 'good afternoon']):
-        return "Hello! I'm your medical appointment assistant. I can help you book, reschedule, or cancel appointments. How can I assist you today?"
+    # Simple keyword matching
+    if any(word in text_lower for word in ['hello', 'hi', 'hey', 'good morning', 'good afternoon', 'नमस्ते', 'வணக்கம்']):
+        return resp["greeting"]
     
-    # Booking intent
-    if any(word in text_lower for word in ['book', 'schedule', 'appointment', 'see doctor']):
-        if 'sarah' in text_lower or 'johnson' in text_lower:
-            return "Great! I can help you book an appointment with Dr. Sarah Johnson, our General Physician. She's available Monday through Friday, 9 AM to 5 PM. What date and time would work best for you?"
-        elif 'raj' in text_lower or 'kumar' in text_lower or 'cardiologist' in text_lower:
-            return "Perfect! Dr. Raj Kumar, our Cardiologist, is available Monday through Wednesday, 10 AM to 4 PM. When would you like to schedule your appointment?"
-        elif 'priya' in text_lower or 'sharma' in text_lower or 'pediatrician' in text_lower:
-            return "Excellent! Dr. Priya Sharma, our Pediatrician, is available Tuesday through Saturday, 9 AM to 3 PM. What date and time would you prefer?"
+    if any(word in text_lower for word in ['book', 'schedule', 'appointment', 'बुकिंग', 'முன்பதிவு']):
+        if any(word in text_lower for word in ['sarah', 'johnson', 'डॉ सारा', 'டாக்டர் சாரா']):
+            return resp["booking_sarah"]
+        elif any(word in text_lower for word in ['raj', 'kumar', 'cardiologist', 'राज', 'ராஜ்']):
+            return resp["booking_raj"]
+        elif any(word in text_lower for word in ['priya', 'sharma', 'pediatrician', 'प्रिया', 'பிரியா']):
+            return resp["booking_priya"]
         else:
-            return "I'd be happy to help you book an appointment. We have three doctors available: Dr. Sarah Johnson (General Physician), Dr. Raj Kumar (Cardiologist), and Dr. Priya Sharma (Pediatrician). Which doctor would you like to see?"
+            return resp["booking_general"]
     
-    # Time mentioned
-    if any(word in text_lower for word in ['tomorrow', 'today', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']) or \
-       any(word in text_lower for word in ['am', 'pm', 'morning', 'afternoon', 'evening']):
-        return "Perfect! I've noted your preferred time. To complete your booking, may I know the reason for your visit? This helps the doctor prepare for your appointment."
+    if any(word in text_lower for word in ['tomorrow', 'today', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday', 'कल', 'आज', 'நாளை', 'இன்று']) or \
+       any(word in text_lower for word in ['am', 'pm', 'morning', 'afternoon', 'evening', 'बजे', 'நேரம்']):
+        return resp["time_noted"]
     
-    # Reason for visit
-    if any(word in text_lower for word in ['checkup', 'fever', 'cold', 'pain', 'sick', 'consultation', 'follow-up', 'test']):
-        return "Thank you! Your appointment has been successfully booked. You'll receive a confirmation message shortly. Is there anything else I can help you with?"
+    if any(word in text_lower for word in ['checkup', 'fever', 'cold', 'pain', 'sick', 'consultation', 'follow-up', 'test', 'बुखार', 'दर्द', 'காய்ச்சல்', 'வலி']):
+        return resp["success"]
     
-    # Cancellation
-    if any(word in text_lower for word in ['cancel', 'delete', 'remove']):
-        return "I understand you'd like to cancel an appointment. Could you please provide your appointment ID or the date of your appointment?"
+    if any(word in text_lower for word in ['cancel', 'delete', 'ரத்து', 'रद्द']):
+        return resp["cancel"]
     
-    # Reschedule
-    if any(word in text_lower for word in ['reschedule', 'change', 'move', 'different time']):
-        return "I can help you reschedule your appointment. What's your current appointment date, and when would you like to move it to?"
+    if any(word in text_lower for word in ['reschedule', 'change', 'மாற்று', 'बदलना']):
+        return resp["reschedule"]
     
-    # Check appointments
-    if any(word in text_lower for word in ['my appointment', 'check', 'view', 'show', 'list']):
-        return "Let me check your appointments. You have one upcoming appointment with Dr. Sarah Johnson on January 15th at 10 AM. Would you like to modify this appointment?"
+    if any(word in text_lower for word in ['my appointment', 'check', 'view', 'देखना', 'சரிபார்க்க']):
+        return resp["check"]
     
-    # Thank you
-    if any(word in text_lower for word in ['thank', 'thanks', 'appreciate']):
-        return "You're very welcome! If you need any assistance with appointments in the future, feel free to reach out. Take care!"
+    if any(word in text_lower for word in ['thank', 'thanks', 'शुक्रिया', 'நன்றி']):
+        return resp["thanks"]
     
-    # Goodbye
-    if any(word in text_lower for word in ['bye', 'goodbye', 'see you', 'exit']):
-        return "Goodbye! Have a great day and stay healthy!"
+    if any(word in text_lower for word in ['bye', 'goodbye', 'अलविदा', 'சென்று வருகிறேன்']):
+        return resp["goodbye"]
     
-    # Default
-    return "I'm here to help with medical appointments. You can book a new appointment, reschedule an existing one, or cancel an appointment. What would you like to do?"
+    return resp["default"]
 
 async def text_to_speech(text: str, language: str = "en") -> bytes:
     """Convert text to speech using gTTS"""
@@ -146,22 +187,30 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 
                 print(f"📝 Processing audio for session {session_id}")
                 
-                # Simulate STT - in real app, use Whisper here
-                user_text = "I want to book an appointment with Dr. Sarah Johnson for tomorrow at 10 AM"
+                # Real STT using Whisper service
+                audio_data = base64.b64decode(message["data"])
+                user_text, detected_lang, stt_latency = await stt_service.transcribe(audio_data)
+                
+                if not user_text:
+                    print(f"⚠️  No text detected in audio for session {session_id}")
+                    processing_sessions.discard(session_id)
+                    continue
+
+                current_lang = sessions[session_id]["language"]
                 
                 # Send transcript back
                 await websocket.send_text(json.dumps({
                     "type": "text",
                     "data": user_text,
-                    "metadata": {"role": "user"}
+                    "metadata": {"role": "user", "detected_lang": detected_lang}
                 }))
                 
-                # Get AI response (rule-based)
+                # Get AI response
                 llm_start = time.time()
-                assistant_text = get_ai_response(user_text, sessions[session_id]["conversation_history"])
+                assistant_text = get_ai_response(user_text, sessions[session_id]["conversation_history"], current_lang)
                 llm_latency = (time.time() - llm_start) * 1000
                 
-                print(f"🤖 AI Response ({llm_latency:.0f}ms): {assistant_text}")
+                print(f"🤖 AI Response ({llm_latency:.0f}ms) [{current_lang}]: {assistant_text}")
                 
                 # Send text response
                 await websocket.send_text(json.dumps({
@@ -172,7 +221,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 
                 # Generate speech
                 tts_start = time.time()
-                audio_bytes = await text_to_speech(assistant_text, sessions[session_id]["language"])
+                audio_bytes = await text_to_speech(assistant_text, current_lang)
                 tts_latency = (time.time() - tts_start) * 1000
                 
                 if audio_bytes:
@@ -192,7 +241,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     "type": "latency",
                     "data": "",
                     "metadata": {
-                        "stt_latency": 100.0,
+                        "stt_latency": stt_latency,
                         "llm_latency": llm_latency,
                         "tool_latency": 0.0,
                         "tts_latency": tts_latency,
@@ -202,10 +251,8 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 }))
                 
                 # Store in conversation history
-                sessions[session_id]["conversation_history"].extend([
-                    {"role": "user", "content": user_text, "timestamp": datetime.utcnow().isoformat()},
-                    {"role": "assistant", "content": assistant_text, "timestamp": datetime.utcnow().isoformat()}
-                ])
+                sessions[session_id]["conversation_history"].append({"role": "user", "content": user_text, "timestamp": datetime.utcnow().isoformat()})
+                sessions[session_id]["conversation_history"].append({"role": "assistant", "content": assistant_text, "timestamp": datetime.utcnow().isoformat()})
                 
                 processing_sessions.discard(session_id)
                 print(f"✅ Completed processing for session {session_id}")
@@ -226,10 +273,12 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     
     except WebSocketDisconnect:
         print(f"❌ WebSocket disconnected: {session_id}")
-        processing_sessions.discard(session_id)
+        if session_id in processing_sessions:
+            processing_sessions.discard(session_id)
     except Exception as e:
         print(f"❌ WebSocket error: {e}")
-        processing_sessions.discard(session_id)
+        if session_id in processing_sessions:
+            processing_sessions.discard(session_id)
         import traceback
         traceback.print_exc()
 
@@ -240,50 +289,27 @@ async def health_check():
         "service": settings.APP_NAME,
         "mode": "demo-working",
         "features": {
-            "stt": "simulated",
+            "stt": "Whisper",
             "tts": "gTTS",
             "llm": "rule-based"
-        },
-        "note": "No API key needed - fully functional demo"
+        }
     }
 
 @app.get("/")
 async def root():
     return {
-        "message": "Clinical Voice AI API - Demo Mode (Fully Working)",
-        "version": "1.0.0",
-        "docs": "/docs",
-        "health": "/health",
-        "websocket": "/ws/{session_id}",
+        "message": "Clinical Voice AI API - Demo Mode",
         "status": "operational"
     }
 
 @app.get("/api/doctors")
 async def get_doctors():
     return [
-        {
-            "id": "D1",
-            "name": "Dr. Sarah Johnson",
-            "specialization": "General Physician",
-            "availability": "Mon-Fri 9 AM - 5 PM",
-            "is_active": True
-        },
-        {
-            "id": "D2",
-            "name": "Dr. Raj Kumar",
-            "specialization": "Cardiologist",
-            "availability": "Mon-Wed 10 AM - 4 PM",
-            "is_active": True
-        },
-        {
-            "id": "D3",
-            "name": "Dr. Priya Sharma",
-            "specialization": "Pediatrician",
-            "availability": "Tue-Sat 9 AM - 3 PM",
-            "is_active": True
-        }
+        {"id": "D1", "name": "Dr. Sarah Johnson", "specialization": "General Physician"},
+        {"id": "D2", "name": "Dr. Raj Kumar", "specialization": "Cardiologist"},
+        {"id": "D3", "name": "Dr. Priya Sharma", "specialization": "Pediatrician"}
     ]
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("app.main_working:app", host="0.0.0.0", port=8000, reload=settings.DEBUG)
+    uvicorn.run("app.main_working:app", host="0.0.0.0", port=8000, reload=True)

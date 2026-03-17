@@ -191,7 +191,7 @@ npm install
 
 # Configure environment
 cp .env.example .env.local
-# Edit .env.local with backend URL
+# Edit .env.local with backend URL if different
 
 # Run development server
 npm run dev
@@ -199,6 +199,23 @@ npm run dev
 # Build for production
 npm run build
 npm start
+```
+
+### Deployed Frontend
+
+The production frontend for this project is available at:
+
+`https://2-acre-ai.vercel.app/`
+
+The production backend API is deployed at:
+
+`https://two-acre-ai.onrender.com`
+
+In production, the frontend environment variables should point to this backend:
+
+```env
+NEXT_PUBLIC_WS_URL=wss://two-acre-ai.onrender.com/ws
+NEXT_PUBLIC_API_URL=https://two-acre-ai.onrender.com/api
 ```
 
 ### Docker Setup (Recommended)
