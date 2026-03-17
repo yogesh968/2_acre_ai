@@ -14,11 +14,13 @@ class SpeechToTextService:
     def __init__(self):
         self.model = None
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
-        self.load_model()
     
     def load_model(self):
         """Load Whisper model into memory"""
-        self.model = whisper.load_model(settings.WHISPER_MODEL)
+        if self.model is None:
+            print(f"⏳ Loading Whisper model ({settings.WHISPER_MODEL})...")
+            self.model = whisper.load_model(settings.WHISPER_MODEL)
+            print("✅ Whisper model loaded")
     
     def _transcribe_sync(self, audio_array) -> Tuple[str, str]:
         """Synchronous transcription"""

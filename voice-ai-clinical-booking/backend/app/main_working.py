@@ -18,11 +18,16 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     """Startup and shutdown events"""
     print("🚀 Starting Clinical Voice AI application (Demo Mode)")
+    
+    # Load models
+    try:
+        stt_service.load_model()
+    except Exception as e:
+        print(f"⚠️ Warning: Could not pre-load Whisper model: {e}")
+
     print(f"📍 Server running on http://localhost:8000")
-    print(f"📚 API Docs available at http://localhost:8000/docs")
     print(f"🎤 Voice input: Enabled (Whisper)")
     print(f"🔊 Voice output: Enabled (gTTS)")
-    print(f"🤖 AI: Rule-based (No API key needed)")
     
     yield
     
