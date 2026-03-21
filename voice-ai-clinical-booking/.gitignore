@@ -46,6 +46,9 @@ out/
 .DS_Store
 Thumbs.db
 
+# Runtime
+*.pid
+
 # Logs
 *.log
 logs/

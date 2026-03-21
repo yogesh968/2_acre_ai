@@ -1,0 +1,28 @@
+# === Production Requirements (Cloud-Only, Lightweight) ===
+# This file is optimized for Render free tier (512MB RAM limit).
+# Uses cloud APIs instead of local ML models.
+
+setuptools>=65.0.0
+wheel>=0.41.0
+
+# Web Framework
+fastapi
+uvicorn[standard]
+websockets
+python-multipart
+
+# LLM (Cloud API - no local models)
+groq
+
+# Speech - Cloud APIs only (NO local Whisper/PyTorch/TTS)
+elevenlabs
+gTTS
+
+# Utilities
+pydantic
+pydantic-settings
+python-dotenv
+httpx
+
+# Monitoring & Logging
+structlog
