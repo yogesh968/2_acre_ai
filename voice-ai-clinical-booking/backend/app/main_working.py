@@ -1,16 +1,23 @@
+import asyncio
+import base64
+import json
+import os
+import time
+from datetime import datetime
+from typing import Dict, List, Optional
+import io
+from groq import Groq
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-from app.core.config import get_settings
-import json
-import base64
-import time
-from datetime import datetime
 from gtts import gTTS
-import io
-import asyncio
-import re
+from app.core.config import get_settings
 from app.services.stt import stt_service
+from app.services.tts import tts_service
+from dotenv import load_dotenv
+
+# Load environment variables explicitly
+load_dotenv()
 
 settings = get_settings()
 
@@ -26,8 +33,8 @@ async def lifespan(app: FastAPI):
         print(f"⚠️ Warning: Could not pre-load Whisper model: {e}")
 
     print(f"📍 Server running on http://localhost:8000")
-    print(f"🎤 Voice input: Enabled (Whisper)")
-    print(f"🔊 Voice output: Enabled (gTTS)")
+    print(f"🎤 Voice input: Enabled (ElevenLabs/Whisper)")
+    print(f"🔊 Voice output: Enabled (ElevenLabs/Fallback)")
     
     yield
     
@@ -101,69 +108,114 @@ RESPONSES = {
     }
 }
 
-def get_ai_response(user_text: str, conversation_history: list, language: str = "en") -> str:
-    """Multi-language rule-based AI responses"""
+# Initializing Groq client
+groq_client = None
+if settings.GROQ_API_KEY:
+    try:
+        from groq import Groq
+        groq_client = Groq(api_key=settings.GROQ_API_KEY)
+        print("✅ Groq LLM initialized")
+    except Exception as e:
+        print(f"❌ Groq initialization failed: {e}")
+
+def get_ai_response(user_text: str, session: dict) -> str:
+    """Natural clinical booking conversation using LLM"""
+    language = session.get("language", "en")
+    history = session.get("conversation_history", [])
+    
+    # Check for Groq first for natural conversation
+    if groq_client:
+        try:
+            # Ensure session has history
+            if "conversation_history" not in session:
+                session["conversation_history"] = []
+                
+            # Prepare messages
+            system_prompt = f"""You are Nova, a helpful and professional clinical appointment assistant.
+            You help patients book, reschedule, or cancel appointments with doctors.
+            
+            Doctors available:
+            - Dr. Sarah Johnson (General Practitioner)
+            - Dr. Raj Kumar (Cardiologist)
+            - Dr. Priya Sharma (Pediatrician)
+            
+            Current state: {session.get('state', 'idle')}
+            Current doctor: {session.get('doctor', 'none')}
+            
+            Voice Interaction Guidelines:
+            - Keep responses clear and very concise (maximum 2 short sentences).
+            - Do NOT repeat the same greeting if you've already introduced yourself.
+            - If the user's input is unclear, ask for clarification politely.
+            - Focus on moving the process forward: ask for doctor choice, then date/time, then reason.
+            
+            Responding in: {language}
+            Important: Use native {language} script directly.
+            """
+            
+            messages = [{"role": "system", "content": system_prompt}]
+            
+            # Add recent history (last 10 rounds)
+            for msg in history[-10:]:
+                messages.append({"role": msg["role"], "content": msg["content"]})
+            
+            # Add current user message
+            messages.append({"role": "user", "content": user_text})
+            
+            print(f"🧠 Sending to Groq (History: {len(history)} msgs): '{user_text[0:30]}...'")
+            
+            completion = groq_client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=messages,
+                max_tokens=150,
+                temperature=0.7
+            )
+            
+            ai_text = completion.choices[0].message.content.strip()
+            
+            # Basic state inference from LLM response (simple version)
+            # This helps keep the fallback logic in sync if needed
+            ai_text_lower = ai_text.lower()
+            if any(w in ai_text_lower for w in ["sarah", "johnson"]): session["doctor"] = "Dr. Sarah Johnson"
+            if any(w in ai_text_lower for w in ["raj", "kumar"]): session["doctor"] = "Dr. Raj Kumar"
+            if any(w in ai_text_lower for w in ["priya", "sharma"]): session["doctor"] = "Dr. Priya Sharma"
+            
+            return ai_text
+            
+        except Exception as e:
+            print(f"❌ LLM Error (Groq): {e}. Falling back to rules.")
+
+    # Fallback to rule-based if Groq fails
     text_lower = user_text.lower()
+    state = session.get("state", "idle")
     resp = RESPONSES.get(language, RESPONSES["en"])
     
-    # Simple keyword matching
-    if any(word in text_lower for word in ['hello', 'hi', 'hey', 'good morning', 'good afternoon', 'नमस्ते', 'வணக்கம்']):
-        return resp["greeting"]
-    
-    if any(word in text_lower for word in ['book', 'schedule', 'appointment', 'बुकिंग', 'முன்பதிவு']):
-        if any(word in text_lower for word in ['sarah', 'johnson', 'डॉ सारा', 'டாக்டர் சாரா']):
-            return resp["booking_sarah"]
-        elif any(word in text_lower for word in ['raj', 'kumar', 'cardiologist', 'राज', 'ராஜ்']):
-            return resp["booking_raj"]
-        elif any(word in text_lower for word in ['priya', 'sharma', 'pediatrician', 'प्रिया', 'பிரியா']):
-            return resp["booking_priya"]
-        else:
-            return resp["booking_general"]
-    
-    if any(word in text_lower for word in ['tomorrow', 'today', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday', 'कल', 'आज', 'நாளை', 'இன்று']) or \
-       any(word in text_lower for word in ['am', 'pm', 'morning', 'afternoon', 'evening', 'बजे', 'நேரம்']):
-        return resp["time_noted"]
-    
-    if any(word in text_lower for word in ['checkup', 'fever', 'cold', 'pain', 'sick', 'consultation', 'follow-up', 'test', 'बुखार', 'दर्द', 'காய்ச்சல்', 'வலி']):
-        return resp["success"]
-    
-    if any(word in text_lower for word in ['cancel', 'delete', 'ரத்து', 'रद्द']):
+    # 1. Check for cancellation or reset keywords (handled globally)
+    if any(word in text_lower for word in ['cancel', 'delete', 'ரத்து', 'रद्द', 'wait', 'stop', 'back']):
+        session["state"] = "idle"
+        session["doctor"] = None
         return resp["cancel"]
-    
-    if any(word in text_lower for word in ['reschedule', 'change', 'மாற்று', 'बदलना']):
-        return resp["reschedule"]
-    
-    if any(word in text_lower for word in ['my appointment', 'check', 'view', 'देखना', 'சரிபார்க்க']):
-        return resp["check"]
-    
-    if any(word in text_lower for word in ['thank', 'thanks', 'शुक्रिया', 'நன்றி']):
-        return resp["thanks"]
-    
-    if any(word in text_lower for word in ['bye', 'goodbye', 'अलविदा', 'சென்று வருகிறேன்']):
-        return resp["goodbye"]
-    
+
+    # 2. Simplified State-based logic for fallback
+    if state == "idle":
+        if any(word in text_lower for word in ['hello', 'hi', 'hey', 'good morning', 'नमस्ते', 'வணக்கம்']):
+            return resp["greeting"]
+        
+        if any(word in text_lower for word in ['book', 'schedule', 'appointment', 'बुकिंग', 'முன்பதிவு']):
+            session["state"] = "booking"
+            return resp["booking_general"]
+        
+        return resp["default"]
+
+    elif state == "booking":
+        session["state"] = "completed"
+        return resp["success"]
+
     return resp["default"]
 
 async def text_to_speech(text: str, language: str = "en") -> bytes:
-    """Convert text to speech using gTTS"""
-    try:
-        lang_map = {"en": "en", "hi": "hi", "ta": "ta"}
-        tts_lang = lang_map.get(language, "en")
-        
-        loop = asyncio.get_event_loop()
-        audio_bytes = await loop.run_in_executor(None, lambda: _generate_speech(text, tts_lang))
-        return audio_bytes
-    except Exception as e:
-        print(f"❌ TTS Error: {e}")
-        return b""
-
-def _generate_speech(text: str, lang: str) -> bytes:
-    """Synchronous speech generation"""
-    tts = gTTS(text=text, lang=lang, slow=False)
-    audio_buffer = io.BytesIO()
-    tts.write_to_fp(audio_buffer)
-    audio_buffer.seek(0)
-    return audio_buffer.read()
+    """Convert text to speech using TTS service"""
+    audio_bytes, latency = await tts_service.synthesize(text, language)
+    return audio_bytes
 
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
@@ -174,7 +226,11 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     if session_id not in sessions:
         sessions[session_id] = {
             "language": "en",
-            "conversation_history": []
+            "conversation_history": [],
+            "state": "idle",
+            "doctor": None,
+            "last_processed_text": "",
+            "last_processed_time": 0
         }
     
     try:
@@ -188,20 +244,60 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     continue
                 
                 processing_sessions.add(session_id)
-                start_time = time.time()
+                session = sessions[session_id]
+                history_len = len(session.get("conversation_history", []))
+                print(f"📝 Processing audio for session {session_id} (History size: {history_len})")
                 
-                print(f"📝 Processing audio for session {session_id}")
+                start_time = time.time()
                 
                 # Real STT using Whisper service
                 audio_data = base64.b64decode(message["data"])
                 user_text, detected_lang, stt_latency = await stt_service.transcribe(audio_data)
                 
-                if not user_text:
-                    print(f"⚠️  No text detected in audio for session {session_id}")
+                # Filter out silence, noise, or hallucinated repetitive phrases
+                hallucination_phrases = ["thanks for watching", "thank you", "you", "...]", "thank you for watching", "watching", "subscribe", "please subscribe"]
+                clean_text = user_text.strip().lower().strip('.')
+                if not user_text or len(clean_text) < 2 or clean_text in hallucination_phrases:
+                    print(f"⚠️  Ignoring low-quality or noisy input: '{user_text}'")
+                    processing_sessions.discard(session_id)
+                    continue
+                
+                # Improved Echo cancellation - ignore if user text is identical to recent processed text
+                # but only if it happens within a short 5-second window
+                last_txt = str(session.get("last_processed_text", ""))
+                last_time = float(session.get("last_processed_time", 0))
+                time_since_last = time.time() - last_time
+                
+                if user_text.lower().strip() == last_txt.lower().strip() and time_since_last < 5:
+                    print(f"🔄 Duplicate text detected within {time_since_last:.1f}s, ignoring: '{user_text}'")
                     processing_sessions.discard(session_id)
                     continue
 
-                current_lang = sessions[session_id]["language"]
+                session["last_processed_text"] = user_text
+                session["last_processed_time"] = time.time()
+
+                history = session["conversation_history"]
+                is_echo = False
+                for prev in reversed(history[-3:]): # Check last 3 messages
+                    if prev["role"] == "assistant":
+                        prev_text = prev["content"].lower()
+                        # If user text is a subset of assistant text or vice versa
+                        if (len(user_text) > 10 and (user_text.lower() in prev_text or prev_text in user_text.lower())) or \
+                           (len(user_text) <= 10 and user_text.lower() in prev_text):
+                            is_echo = True
+                            break
+                
+                if is_echo:
+                    print(f"🔇 Echo detected, ignoring: '{user_text}'")
+                    processing_sessions.discard(session_id)
+                    continue
+
+                # Auto-update language based on detection
+                if detected_lang in RESPONSES and detected_lang != session["language"]:
+                    session["language"] = detected_lang
+                    print(f"🌐 Language auto-switched to: {detected_lang}")
+
+                current_lang = session["language"]
                 
                 # Send transcript back
                 await websocket.send_text(json.dumps({
@@ -212,7 +308,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 
                 # Get AI response
                 llm_start = time.time()
-                assistant_text = get_ai_response(user_text, sessions[session_id]["conversation_history"], current_lang)
+                assistant_text = get_ai_response(user_text, sessions[session_id])
                 llm_latency = (time.time() - llm_start) * 1000
                 
                 print(f"🤖 AI Response ({llm_latency:.0f}ms) [{current_lang}]: {assistant_text}")
@@ -235,7 +331,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     await websocket.send_text(json.dumps({
                         "type": "audio_chunk",
                         "data": audio_b64,
-                        "sample_rate": 24000,
+                        "sample_rate": 44100,
                         "metadata": {"format": "mp3"}
                     }))
                     print(f"✅ Audio sent to client")
@@ -294,9 +390,10 @@ async def health_check():
         "service": settings.APP_NAME,
         "mode": "demo-working",
         "features": {
-            "stt": "Whisper",
-            "tts": "gTTS",
-            "llm": "rule-based"
+            "stt": "ElevenLabs/Whisper",
+            "tts": "ElevenLabs/Fallback",
+            "llm": "groq-llama-3.3" if groq_client else "rule-based",
+            "groq_status": "initialized" if groq_client else "missing_key"
         }
     }
 

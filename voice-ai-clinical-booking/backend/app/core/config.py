@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     
     # Groq
     GROQ_API_KEY: str = ""
+    ELEVENLABS_API_KEY: str = ""
     
     # Speech
     WHISPER_MODEL: str = "base"
